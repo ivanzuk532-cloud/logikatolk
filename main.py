@@ -1,117 +1,97 @@
-from customtkinter import *
-from socket import *
+import socket
 import threading
 
+# --- Налаштування мережі ---
+# Локальна адреса (для запуску на одному комп'ютері) та порт для підключення
+HOST = "127.0.0.1"
+PORT = 8080
+
+# Список для зберігання об'єктів підключення всіх активних клієнтів
+clients = []
 
 
+def broadcast(message, sender_socket):
+    """Розсилає отримане повідомлення всім підключеним клієнтам,
 
-class LogiTalk(CTk):
-  def __init__(self):
-      super().__init__()
-
-
-      self.title("LogiTalk")
-      self.geometry("400x300")
-      self.minsize(400, 300)
-
-
-      self.username = "Клієнт"
-
-
-      self.grid_columnconfigure(1, weight=1)
-      self.grid_rowconfigure(0, weight=1)
-
-
-      self.frame = CTkFrame(self, width=200)
-      self.frame.grid(row=0, column=0, rowspan=2, sticky="ns")
-      self.frame.grid_propagate(False)
+    крім того, хто його відправив (щоб він не бачив своє повідомлення двічі).
+    """
+    for client in clients:
+        if client != sender_socket:
+            try:
+                # Відправляємо байти клієнту
+                client.sendall(message)
+            except:
+                # Якщо клієнт раптово відключився — закриваємо його сокет і видаляємо зі списку
+                client.close()
+                if client in clients:
+                    clients.remove(client)
 
 
-      self.label = (CTkLabel(self.frame, text=f"Привіт, {self.username}"))
-      self.label.pack(pady=30)
-      self.entry = CTkEntry(self.frame)
-      self.entry.pack()
+def handle_client(client_socket):
+    """Функція для фонового потоку.
+
+    Обслуговує конкретного підключеного клієнта: читає від нього дані та
+    пересилає іншим.
+    """
+    buf = ""
+    while True:
+        try:
+            # Отримуємо дані від клієнта (до 4096 байт)
+            data = client_socket.recv(4096)
+            if not data:
+                break  # Якщо дані порожні — клієнт розірвав з'єднання
+
+            # Декодуємо байти у рядок та додаємо до буфера
+            buf += data.decode(errors="ignore")
+
+            # Обробляємо повідомлення по рядках, оскільки вони розділені символом '\n'
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                print(f"[Отримано від клієнта]: {line}")
+
+                # Пересилаємо рядок усім іншим учасникам чату (повертаючи символ '\n' в кінці)
+                broadcast((line + "\n").encode(), client_socket)
+        except:
+            # У разі будь-якої помилки мережі виходимо з циклу
+            break
+
+    # Коли цикл завершився (клієнт вийшов), видаляємо його з активного списку
+    if client_socket in clients:
+        clients.remove(client_socket)
+    client_socket.close()
+    print("[-] Клієнт відключився від сервера.")
 
 
-      CTkButton(self.frame, text="Прийняти", command=self.set_username).pack(pady=30)
-      CTkOptionMenu(self.frame, values=["Світла", "Темна"], command=self.change_theme).pack(side="bottom", pady=20)
+def start_server():
+    """Головна функція запуску сервера"""
+    # Створюємо TCP-сокет (AF_INET — IPv4, SOCK_STREAM — TCP)
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    # Дозволяємо повторно використовувати порт одразу після зупинки програми
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    # Прив'язуємо сокет до IP-адреси та порту
+    server.bind((HOST, PORT))
+
+    # Переводимо сервер у режим прослуховування вхідних з'єднань
+    server.listen()
+    print(f"[*] Сервер запущено на {HOST}:{PORT}. Очікування підключень...")
+
+    while True:
+        # Чекаємо на підключення нового клієнта (метод accept блокує потік до появи клієнта)
+        client_socket, addr = server.accept()
+        print(f"[+] Нове підключення з IP: {addr}")
+
+        # Додаємо нового клієнта до загального списку
+        clients.append(client_socket)
+
+        # Створюємо та запускаємо окремий потік для цього клієнта,
+        # щоб сервер міг одночасно працювати з багатьма людьми (багатопотоковість)
+        threading.Thread(
+            target=handle_client, args=(client_socket,), daemon=True
+        ).start()
 
 
-      self.chat_text = CTkScrollableFrame(self)
-      self.chat_text.grid(row=0, column=1, sticky="nsew")
-
-
-      bottom = CTkFrame(self)
-      bottom.grid(row=1, column=1, sticky="ew")
-      bottom.grid_columnconfigure(0, weight=1)
-
-
-      self.message_input = CTkEntry(bottom, placeholder_text="Ваше повідомлення")
-      self.message_input.grid(row=0, column=0, sticky="ew", padx=(5, 0), pady=5)
-
-
-      self.send_button = CTkButton(bottom, text="▶️", width=40, command=self.send_message)
-      self.send_button.grid(row=0, column=1, padx=5, pady=5)
-
-
-      try:
-          self.sock = socket(AF_INET, SOCK_STREAM)
-          self.sock.connect(("127.0.0.1", 8080))
-          hello = f"TEXT@{self.username}@[SYSTEM] {self.username} приєднується до чату!\n"
-          self.sock.send(hello.encode())
-          threading.Thread(target=self.recv_message, daemon=True).start()
-      except Exception as e:
-          self.add_message(f"Не вдалось підключитись: {e}")
-
-
-  def set_username(self):
-      self.username = self.entry.get()
-      self.label.configure(text=f"Привіт, {self.username}")
-      self.entry.delete(0, END)
-
-
-  def add_message(self, message, img=None, own_message=False):
-      bg = "#4a4a4a" if own_message else "#2d2d2d"
-      f = CTkFrame(self.chat_text, fg_color=bg)
-      f.pack(anchor="e" if own_message else "w", pady=5, padx=5)
-      CTkLabel(f, text=message, wraplength=260, justify="left").pack(padx=10, pady=5)
-
-
-  def send_message(self):
-      msg = self.message_input.get()
-      if not msg:
-          return
-      self.add_message(f"{self.username}: {msg}", own_message=True)
-      try:
-          self.sock.sendall(f"TEXT@{self.username}@{msg}\n".encode())
-      except:
-          pass
-      self.message_input.delete(0, END)
-
-
-  def recv_message(self):
-      buf = ""
-      while True:
-          try:
-              data = self.sock.recv(4096)
-              if not data:
-                  break
-              buf += data.decode(errors="ignore")
-              while "\n" in buf:
-                  line, buf = buf.split("\n", 1)
-                  self.handle_line(line)
-          except:
-              break
-
-
-  def handle_line(self, line):
-      parts = line.split("@", 3)
-      if parts[0] == "TEXT" and len(parts) == 3:
-          self.add_message(f"{parts[1]}: {parts[2]}")
-
-
-  def change_theme(self, value):
-      set_appearance_mode("dark" if value == "Темна" else "light")
-
-
-LogiTalk().mainloop()
+# Запуск сервера при виконанні цього файлу
+if __name__ == "__main__":
+    start_server()
