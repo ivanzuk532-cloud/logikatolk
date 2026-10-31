@@ -169,4 +169,4 @@ class LogiTalk(CTk):
 
 # --- Запуск додатка ---
 if __name__ == "__main__":
-    LogiTalk().mainloop()
+    LogiTalk().mainloop() 192.168.1.106
